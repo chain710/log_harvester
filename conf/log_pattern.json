@@ -1,0 +1,4 @@
+[
+{"pattern":"/tmp/m-{YEAR}{MONTH}{DAY}-{HOUR}{MIN}.log"},
+{"pattern":"/tmp/d-{YEAR}{MONTH}{DAY}.log"}
+]

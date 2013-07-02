@@ -1,0 +1,9 @@
+{
+    "connect_timeout":3,
+    "max_tcp_idle":300,
+    "max_recover_link_num":10,
+    "max_check_link_num":128,
+    "app_queue_len":102400,
+    "log_config_path":"demo.property",
+    "min_netlink_recover_interval":5
+}

@@ -1,0 +1,7 @@
+{
+    "links":[
+    {"type":"listen", "bind_ip":"0.0.0.0", "bind_port":5000, "usr_send_buffer":128, "usr_recv_buffer":128, "reuse_addr":true},
+    {"type":"listen", "bind_ip":"0.0.0.0", "bind_port":5001, "usr_send_buffer":128, "usr_recv_buffer":128, "reuse_addr":true}
+    //{"type":"connect", "ip":"192.168.0.147", "port":5002}
+    ]
+}

@@ -1,0 +1,10 @@
+{
+    "netlink_config": "netlink.json",
+    "applib": "demo_lib/demo.so",
+    "max_link_num": 128, 
+    "max_fired_link_num":128,
+    "runtime_config":"runtime.json",
+    "mem_allocator":[
+        [512,16],[1024,16],[2048,16],[70000,2]
+    ]
+}

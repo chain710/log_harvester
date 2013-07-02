@@ -2,18 +2,125 @@
 #include "base64.h"
 #include "sha1.h"
 #include "websocket_codec.h"
+#include "log_agent_global.h"
+#include "log_agent.pb.h"
 #include <utility.h>
 
-#include <json/json.h>
 #include <string.h>
 #include <stdio.h>
 #include <string>
 #include <signal.h>
 #include <inttypes.h>
+#include <json/json.h>
 
 using namespace std;
 using namespace std::tr1;
 using namespace log4cplus;
+using namespace google::protobuf;
+
+enum msgpack_type_t
+{
+    mt_websocket = 1, 
+    mt_protobuf = 2,
+};
+
+enum endpoint_group_t
+{
+    egt_log_master = 1,
+};
+
+struct pack_info_t
+{
+    int type_;
+};
+
+//////////////////////////////////////////////////////////////////////////
+// 全局变量
+log_agent_global_t la_global_;
+//////////////////////////////////////////////////////////////////////////
+
+int parse_protobuf_msg(const void* data, size_t len, Message* msg)
+{
+    if (len < 1) return 0;
+    const unsigned char* p = (const unsigned char* )data;
+    int msglen = p[0];
+    int offset = 1;
+    if (254 == msglen)
+    {
+        if (len < offset+sizeof(unsigned short)) return -1;
+        unsigned short *msglen2 = (unsigned short *)&p[offset];
+        msglen = ntohs(*msglen2);
+        offset += sizeof(unsigned short);
+    }
+    else if (255 == msglen)
+    {
+        if (len < offset+sizeof(int)) return -1;
+        int *msglen2 = (int *)&p[offset];
+        msglen = ntohl(*msglen2);
+        offset += sizeof(int);
+    }
+
+    if ((int)len < msglen + offset) return -1;
+    if (msg)
+    {
+        if (!msg->ParseFromArray(data, len)) return -2;
+    }
+
+    return offset + msglen;
+}
+
+int get_protobuf_msg_len(const char* data, size_t len)
+{
+    int ret = parse_protobuf_msg(data, len, NULL);
+    if (ret < -1)
+    {
+        return ret;
+    }
+    else if (-1 == ret)
+    {
+        return ret;
+    }
+    else
+    {
+        return ret;
+    }
+}
+
+int pack_protobuf_msg(void* data, size_t len, const Message& msg)
+{
+    if (len < 1) return -1;
+    unsigned char* p = (unsigned char*)data;
+    int msglen = msg.ByteSize();
+    int offset = 1;
+    if (msglen < 254)
+    {
+        p[0] = msglen;
+    }
+    else if (msglen < 65535)
+    {
+        p[0] = 254;
+        if (len < offset + sizeof(unsigned short)) return -1;
+        unsigned short* plen = (unsigned short*)&p[offset];
+        *plen = htons(msglen);
+        offset += sizeof(unsigned short);
+    }
+    else
+    {
+        p[0] = 255;
+        if (len < offset + sizeof(int)) return -1;
+        int* plen = (int*)&p[offset];
+        *plen = htonl(msglen);
+        offset += sizeof(int);
+    }
+
+    if ((int)len < offset + msglen) return -1;
+    if (!msg.SerializeToArray(&p[offset], len - offset))
+    {
+        return -2;
+    }
+
+    return offset + msglen;
+}
 
 //////////////////////////////////////////////////////////////////////////
 // http parser callbacks
@@ -130,7 +237,7 @@ std::string get_real_filename( const std::string& file_pattern, time_t t )
 }
 
 //////////////////////////////////////////////////////////////////////////
-int log_agent_t::handle_msgpack( msgpack_context_t ctx, const char* pack, size_t pack_len)
+int log_agent_t::handle_websocket( msgpack_context_t ctx, const char* pack, size_t pack_len)
 {
     client_map_t::iterator it = clients_.find(ctx.link_fd_);
     if (ctx.flag_ & mpf_new_connection)
@@ -203,7 +310,7 @@ int log_agent_t::handle_msgpack( msgpack_context_t ctx, const char* pack, size_t
             L_DEBUG("response(%s)\n", msg.c_str());
 
             c.state_ = client_t::cst_handshaked;
-            return calypso_send_msgpack_by_ctx(container_, &ctx, msg.c_str(), msg.length());
+            return calypso_send_msgpack_by_ctx(opt_.msg_queue_, &ctx, msg.c_str(), msg.length());
         }
         break;
     case client_t::cst_handshaked:
@@ -229,6 +336,7 @@ int log_agent_t::handle_msgpack( msgpack_context_t ctx, const char* pack, size_t
             {
             case WFOP_TEXT:
                 L_DEBUG("recv text len=%"PRIu64" msg=%s", frame.payload_len_, frame.payload_);
+                // TODO: check if hello package?
                 break;
             case WFOP_BINARY:
                 // hex
@@ -269,7 +377,7 @@ int log_agent_t::handle_msgpack( msgpack_context_t ctx, const char* pack, size_t
                     ctx.flag_ |= mpf_close_link;
                 }
                 
-                return calypso_send_msgpack_by_ctx(container_, &ctx, pack_buffer, pack_len);
+                return calypso_send_msgpack_by_ctx(opt_.msg_queue_, &ctx, pack_buffer, pack_len);
             }
         }
         break;
@@ -307,23 +415,45 @@ void log_agent_t::broadcast_newlog( const std::string& fn, const std::string& lo
 {
     L_DEBUG("file %s has new log %s", fn.c_str(), logline.c_str());
 
-    char msgbuf[1024];
+    char msgbuf[2048];
     int packlen = pack_ws_frame(msgbuf, sizeof(msgbuf), WFOP_TEXT, logline.length());
+    if (packlen < 0)
+    {
+        L_ERROR("pack_ws_frame failed %d", packlen);
+        return;
+    }
+
     packlen += snprintf(&msgbuf[packlen], sizeof(msgbuf)-packlen, "%s", logline.c_str());
 
     client_map_t::iterator it;
     for (it = clients_.begin(); it != clients_.end(); ++it)
     {
-        calypso_send_msgpack_by_ctx(container_, &it->second.mctx_, msgbuf, packlen);
+        calypso_send_msgpack_by_ctx(opt_.msg_queue_, &it->second.mctx_, msgbuf, packlen);
     }
+
+    // 向其他log master发送新日志内容
+    report_log_msg msg;
+    msg.set_file(fn);
+    msg.set_source("test");
+    msg.add_logs(logline);
+
+    packlen = pack_protobuf_msg(msgbuf, sizeof(msgbuf), msg);
+    if (packlen < 0)
+    {
+        L_ERROR("pack_protobuf_msg failed %d", packlen);
+        return;
+    }
+
+    calypso_send_msgpack_by_group(opt_.msg_queue_, egt_log_master, msgbuf, packlen);
 }
 
-log_agent_t::log_agent_t()
+log_agent_t::log_agent_t(app_init_option opt)
 {
     last_handle_reload_ = 0;
     harvester_.reg_newlog_callback(bind(&log_agent_t::broadcast_newlog, this, placeholders::_1, placeholders::_2));
     harvester_.create();
     last_watch_log_check_time_ = 0;
+    opt_ = opt;
 }
 
 int log_agent_t::load_log_pattern( const char* path )
@@ -398,10 +528,91 @@ void log_agent_t::watch_log_check(time_t now)
     }
 }
 
-void* app_initialize( void* container )
+int log_agent_t::handle_msgpack( msgpack_context_t ctx, const char* pack, size_t pack_len )
 {
-    log_agent_t* r = new log_agent_t;
-    r->set_container(container);
+    
+    if (0 == pack_len)
+    {
+        // control msg
+        client_map_t::iterator it = clients_.find(ctx.link_fd_);
+        if (ctx.flag_ & mpf_new_connection)
+        {
+            if (it != clients_.end())
+            {
+                // 前一个linkfd已经被关闭了
+                L_TRACE("close prev client object by fd %d", ctx.link_fd_);
+                it->second.clear();
+            }
+
+            client_t& c = clients_[ctx.link_fd_];
+            c.mctx_ = ctx;
+            return 0;
+        }
+        else if (ctx.flag_ & mpf_closed_by_peer)
+        {
+            if (it != clients_.end())
+            {
+                // 前一个linkfd已经被关闭了
+                L_TRACE("closed by peer, clear fd %d data", ctx.link_fd_);
+                it->second.clear();
+            }
+
+            return 0;
+        }
+        else
+        {
+            L_ERROR("unknown control msg with packlen(%d)", (int)pack_len);
+            return -1;
+        }
+    }
+
+    size_t offset = sizeof(pack_info_t);
+    if (ctx.extrabuf_len_ != (int)offset)
+    {
+        L_ERROR("invalid extrabuf!%s", "");
+        return -1;
+    }
+
+    if (pack_len < offset)
+    {
+        L_ERROR("pack len %d too small, less than offset %d", (int)pack_len, (int)offset);
+        return -1;
+    }
+
+    const pack_info_t* pinfo = (const pack_info_t*) pack;
+    switch (pinfo->type_)
+    {
+    case mt_websocket: return handle_websocket(ctx, &pack[offset], pack_len - offset);
+    case mt_protobuf: return handle_protobuf(ctx, &pack[offset], pack_len - offset);
+    default:
+        L_ERROR("undefined pack type %d", pinfo->type_);
+        return -1;
+    }
+
+    return 0;
+}
+
+int log_agent_t::handle_protobuf( msgpack_context_t ctx, const char* pack, size_t pack_len )
+{
+    report_log_msg msg;
+    int ret = parse_protobuf_msg(pack, pack_len, &msg);
+    if (ret < 0)
+    {
+        L_ERROR("parse_protobuf_msg failed %d", ret);
+        return -1;
+    }
+
+    for (int i = 0; i < msg.logs_size(); ++i)
+    {
+        broadcast_newlog(msg.file(), msg.logs(i));
+    }
+
+    return 0;
+}
+
+void* app_initialize( app_init_option opt )
+{
+    log_agent_t* r = new log_agent_t(opt);
     r->load_log_pattern("log_pattern.json");
     return r;
 }
@@ -418,30 +629,59 @@ void app_handle_tick( void* app_inst )
     app->handle_tick();
 }
 
-int app_get_msgpack_size( void* app_inst, const msgpack_context_t* ctx, const char* data, size_t size )
+int app_get_msgpack_size( const msgpack_context_t* ctx, const char* data, size_t size, char* extrabuf, size_t* extrabuf_len )
 {
-    //////////////////////////////////////////////////////////////////////////
-    if (is_client_ws_frame(data, size))
+    if (NULL == extrabuf_len || NULL == extrabuf)
     {
-        int ret = get_ws_frame_len(data, size);
-        if (ret < 0)
+        L_ERROR("invalid provided extrabuf%s", "");
+        return -1;
+    }
+
+    if (*extrabuf_len < sizeof(pack_info_t))
+    {
+        L_ERROR("not enough extrabuflen, need at least %d", (int)sizeof(pack_info_t));
+        return -1;
+    }
+
+    pack_info_t pinfo;
+    pinfo.type_ = la_global_.get_packtype(*ctx);
+    memcpy(extrabuf, &pinfo, sizeof(pinfo));
+    *extrabuf_len = sizeof(pinfo);
+
+    switch (pinfo.type_)
+    {
+    case mt_websocket:
         {
-            L_ERROR("get_ws_frame_len error %d", ret);
-            return -1;
+            if (is_client_ws_frame(data, size))
+            {
+                int ret = get_ws_frame_len(data, size);
+                if (ret < 0)
+                {
+                    L_ERROR("get_ws_frame_len error %d", ret);
+                    return -1;
+                }
+
+                return ret;
+            }
+
+            string msg(data, size);
+            size_t delim_pos = msg.find("\r\n\r\n");
+            if (delim_pos == string::npos)
+            {
+                return 0;
+            }
+
+            L_DEBUG("find full http head, len=%d", (int)delim_pos+4);
+            return delim_pos + 4;
         }
-
-        return ret;
+        break;
+    case mt_protobuf:
+        // [byte short short][protobuf]
+        return get_protobuf_msg_len(data, size);
+    default:
+        L_ERROR("undefined pack type %d", pinfo.type_);
+        return -1;
     }
-
-    string msg(data, size);
-    size_t delim_pos = msg.find("\r\n\r\n");
-    if (delim_pos == string::npos)
-    {
-        return 0;
-    }
-
-    L_DEBUG("find full http head, len=%d", (int)delim_pos+4);
-    return delim_pos + 4;
 }
 
 int app_handle_msgpack( void* app_inst, const msgpack_context_t* ctx, const char* data, size_t size )
@@ -449,6 +689,9 @@ int app_handle_msgpack( void* app_inst, const msgpack_context_t* ctx, const char
     log_agent_t* app = (log_agent_t*) app_inst;
     return app->handle_msgpack(*ctx, data, size);
 }
+
+//////////////////////////////////////////////////////////////////////////
+// implement app callbacks
 
 app_handler_t get_app_handler()
 {
@@ -460,4 +703,22 @@ app_handler_t get_app_handler()
     h.handle_msgpack_ = app_handle_msgpack;
     h.handle_tick_ = app_handle_tick;
     return h;
+}
+
+int app_global_init()
+{
+    L_TRACE("app_global_init%s", "");
+    la_global_.load_packtype("packtype.json");
+    return 0;
+}
+
+void app_global_reload()
+{
+    L_TRACE("app_global_reload%s", "");
+    la_global_.load_packtype("packtype.json");
+}
+
+void app_global_fina()
+{
+    L_TRACE("app_global_fina%s", "");
 }

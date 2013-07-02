@@ -1,0 +1,5 @@
+message report_log_msg {
+    optional string source = 1;
+    required string file = 2;
+    repeated string logs = 3;
+}

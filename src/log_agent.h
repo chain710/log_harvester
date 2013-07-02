@@ -84,12 +84,13 @@ public:
         msgpack_context_t mctx_;
     };
 
-    log_agent_t();
+    log_agent_t(app_init_option opt);
 
     ~log_agent_t() {}
     void handle_tick();
     int handle_msgpack(msgpack_context_t ctx, const char*, size_t);
-    void set_container(void* c) { container_ = c; }
+    int handle_websocket(msgpack_context_t ctx, const char* pack, size_t pack_len);
+    int handle_protobuf(msgpack_context_t ctx, const char* pack, size_t pack_len);
     void broadcast_newlog(const std::string& fn, const std::string& logline);
 
     // [{"pattern":xxxx }, ...]
@@ -98,8 +99,6 @@ public:
     
     //void handle_timer(int64_t v);
     time_t last_handle_reload_;
-    //timer_engine_t timers_;
-    void* container_;
 
     LogHarvester harvester_;
 
@@ -117,7 +116,9 @@ public:
 
     typedef std::map<std::string, logfile_info_t> log_pattern_map_t;
     log_pattern_map_t log_patterns_;
+
     time_t last_watch_log_check_time_;
+    app_init_option opt_;
 };
 
 #endif

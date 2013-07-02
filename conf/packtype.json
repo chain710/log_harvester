@@ -1,0 +1,4 @@
+[
+{"address":"0.0.0.0:5000", "role":"server", "type":1}, 
+{"role":"default", "type":1}
+]

@@ -127,14 +127,14 @@ int LogHarvester::event_check()
                     if (pevent->mask & IN_DELETE_SELF)
                     {
                         L_INFO("delete event from fd %d", pevent->wd);
-                        close(pevent->wd);
+                        inotify_rm_watch(inotify_, pevent->wd);
                         watchers_.erase(pevent->wd);
                     }
 
                     if (pevent->mask & IN_MOVE_SELF)
                     {
                         L_INFO("file is moved, fd %d", pevent->wd);
-                        close(pevent->wd);
+                        inotify_rm_watch(inotify_, pevent->wd);
                         watchers_.erase(pevent->wd);
                     }
 
@@ -236,7 +236,6 @@ void LogHarvester::clear_watchers()
     for (fd2watcher_map_t::iterator it = watchers_.begin(); it != watchers_.end(); )
     {
         inotify_rm_watch(inotify_, it->second.fd_);
-        close(it->second.fd_);
         watchers_.erase(it++);
     }
 }
@@ -250,7 +249,6 @@ void LogHarvester::remove_watcher( int wd )
     }
 
     inotify_rm_watch(inotify_, wd);
-    close(wd);  // necessary?
 }
 
 time_t LogHarvester::get_last_event_time( int wd )

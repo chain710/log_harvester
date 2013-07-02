@@ -240,40 +240,14 @@ std::string get_real_filename( const std::string& file_pattern, time_t t )
 int log_agent_t::handle_websocket( msgpack_context_t ctx, const char* pack, size_t pack_len)
 {
     client_map_t::iterator it = clients_.find(ctx.link_fd_);
-    if (ctx.flag_ & mpf_new_connection)
-    {
-        if (it != clients_.end())
-        {
-            // 前一个linkfd已经被关闭了
-            L_TRACE("close prev client object by fd %d", ctx.link_fd_);
-            it->second.clear();
-        }
-
-        client_t& c = clients_[ctx.link_fd_];
-        //c.clear();
-        c.mctx_ = ctx;
-        return 0;
-    }
-
-    if (ctx.flag_ & mpf_closed_by_peer)
-    {
-        if (it != clients_.end())
-        {
-            // 前一个linkfd已经被关闭了
-            L_TRACE("closed by peer, clear fd %d data", ctx.link_fd_);
-            it->second.clear();
-        }
-
-        return 0;
-    }
-
     if (it == clients_.end())
     {
-        L_ERROR("find no client by fd %d", ctx.link_fd_);
-        return -1;
+        // new client
+        client_t& c = clients_[ctx.link_fd_];
+        c.mctx_ = ctx;
     }
 
-    client_t& c = it->second;
+    client_t& c = clients_[ctx.link_fd_];
 
     switch (c.state_)
     {
@@ -428,7 +402,10 @@ void log_agent_t::broadcast_newlog( const std::string& fn, const std::string& lo
     client_map_t::iterator it;
     for (it = clients_.begin(); it != clients_.end(); ++it)
     {
-        calypso_send_msgpack_by_ctx(opt_.msg_queue_, &it->second.mctx_, msgbuf, packlen);
+        if (it->second.state_ == client_t::cst_handshaked)
+        {
+            calypso_send_msgpack_by_ctx(opt_.msg_queue_, &it->second.mctx_, msgbuf, packlen);
+        }
     }
 
     // 向其他log master发送新日志内容
@@ -530,7 +507,6 @@ void log_agent_t::watch_log_check(time_t now)
 
 int log_agent_t::handle_msgpack( msgpack_context_t ctx, const char* pack, size_t pack_len )
 {
-    
     if (0 == pack_len)
     {
         // control msg
@@ -541,11 +517,9 @@ int log_agent_t::handle_msgpack( msgpack_context_t ctx, const char* pack, size_t
             {
                 // 前一个linkfd已经被关闭了
                 L_TRACE("close prev client object by fd %d", ctx.link_fd_);
-                it->second.clear();
+                clients_.erase(it);
             }
 
-            client_t& c = clients_[ctx.link_fd_];
-            c.mctx_ = ctx;
             return 0;
         }
         else if (ctx.flag_ & mpf_closed_by_peer)
@@ -554,7 +528,7 @@ int log_agent_t::handle_msgpack( msgpack_context_t ctx, const char* pack, size_t
             {
                 // 前一个linkfd已经被关闭了
                 L_TRACE("closed by peer, clear fd %d data", ctx.link_fd_);
-                it->second.clear();
+                clients_.erase(it);
             }
 
             return 0;

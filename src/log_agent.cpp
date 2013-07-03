@@ -60,10 +60,10 @@ int parse_protobuf_msg(const void* data, size_t len, Message* msg)
         offset += sizeof(int);
     }
 
-    if ((int)len < msglen + offset) return -1;
+    if ((int)len != msglen + offset) return -1;
     if (msg)
     {
-        if (!msg->ParseFromArray(data, len)) return -2;
+        if (!msg->ParseFromArray(&p[offset], msglen)) return -2;
     }
 
     return offset + msglen;

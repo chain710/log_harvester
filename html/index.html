@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="zh-cn">
+<head>
+<meta charset="utf-8">
+<title>Log Harvester</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link href="css/bootstrap.min.css" rel="stylesheet" media="screen">
+<style>
+body {
+    padding-top: 60px;
+}
+
+#log_list {
+    list-style-type:none;
+}
+
+#log_list li {
+    padding-bottom: 4px;
+    word-break:break-all;
+}
+
+#log_list .label {
+    margin-right: 5px;
+}
+
+#log_list .filename {
+    padding-left: 3px;
+}
+
+#common-alert-dlg {
+    display:none;
+}
+
+.highlight {
+    background-color: #0e0;
+    color: #000;
+}
+
+</style>
+</head>
+<body>
+<div class="navbar navbar-inverse navbar-fixed-top">
+<div class="navbar-inner">
+<div class="container-fluid">
+<span class="brand">LOG HARVESTER</span>
+<div class="navbar-form pull-right">
+<input id="log_filter" class="span2" type="text" placeholder="regexp pattern">
+</div>
+</div>
+</div>
+</div>
+<div id="log_container" class="container-fluid">
+<div class="row-fluid">
+<div class="span12">
+    <div class="alert" id="common-alert-dlg">
+        <button type="button" class="close" data-dismiss="alert">&times;</button>
+        <strong id="alert-text">Warning!</strong>
+    </div>
+    <ul id="log_list">
+    </ul>
+</div>
+</div>
+</div>
+</body>
+<script src="http://code.jquery.com/jquery.js"></script>
+<script src="js/bootstrap.min.js"></script>
+<script>
+var LOG_ROTATE_NUM = 128;
+var delay = (function() {
+    var timer = 0;
+    return function(callback, ms) {
+        clearTimeout(timer);
+        timer = setTimeout(callback, ms);
+    }
+})();
+
+function create_log_stream(ws_addr, opt) {
+    var nofunc = function() {};
+    var ws = new WebSocket(ws_addr);
+    if ('object' == typeof(opt)) {
+        if ('function' == typeof(opt['onopen'])) {
+            ws.onopen = opt['onopen'];
+        }
+        else {
+            ws.onopen = nofunc;
+        }
+        
+        if ('function' == typeof(opt['onmessage'])) {
+            ws.onmessage = opt['onmessage'];
+        }
+        else {
+            ws.onmessage = nofunc;
+        }
+        
+        if ('function' == typeof(opt['onclose'])) {
+            ws.onclose = opt['onclose'];
+        }
+        else {
+            ws.onclose = nofunc;
+        }
+        
+        if ('function' == typeof(opt['onerror'])) {
+            ws.onerror = opt['onerror'];
+        }
+        else {
+            ws.onerror = nofunc;
+        }
+    }
+    
+    return ws;
+}
+
+function send_ping(ws) {
+    ws.send("HELLO");
+}
+
+function show_common_alert(msg) {
+    $('#alert-text').text(msg);
+    $('#common-alert-dlg').show();
+}
+
+function append_internal_info(msg, rotate_num) {
+    var l = {"file":"INTERNAL", "log":[msg]}
+    render_logs(l, rotate_num);
+}
+
+function render_logs(logs, rotate_num) {
+    var lc = $('#log_list');
+    var ln = lc.find('li').length;
+    if (0 == logs['log'].length) return;
+    
+    var remove_num = ln + logs['log'].length - rotate_num;
+    if (remove_num > 0) {
+        lc.find('li:gt('+(ln-remove_num-1)+')').remove();
+    }
+    
+    var label_type, label_text;
+    if ("INTERNAL" == logs['file']) {
+        label_type = "important";
+        label_text = "sys";
+    }
+    else
+    {
+        important = "info";
+        label_text = "log";
+    }
+    var label_type = "INTERNAL" == logs['file']? "important": "info";
+    var log_html = '';
+    for (var i = 0; i < logs['log'].length; ++i) {
+        log_html += '<li><span class="label label-'+label_type+'">'+label_text+'</span><span class="filename pull-right muted">'+logs['file']+'</span><span class="log_line">'+logs['log'][i]+'</span></li>';
+    }
+    
+    lc.prepend(filter_log($('#log_filter').val(), $(log_html)));
+}
+
+function filter_log(pattern, log_list) {
+    var re = new RegExp(pattern, 'g');
+    var res;
+    var replace_dst = '<span class="highlight">$&</span>'
+    // clear prev search
+    log_list.find('.highlight').replaceWith(function () {
+        return $(this).contents();
+    });
+    
+    log_list.each(function() {
+        var obj = $(this);
+        var ll = obj.find('.log_line');
+        res = ll.text().match(re);
+        if (res != null) {
+            ll.html(ll.text().replace(re, replace_dst));
+            obj.show();
+        }
+        else {
+            obj.hide();
+        }
+    });
+    
+    return log_list;
+}
+
+function log_filter_keyup() {
+    // thx to http://stackoverflow.com/questions/1620602/javascript-jquery-make-an-ajax-request-when-a-user-is-typing-in-a-textarea
+    console.log("keyup="+$('#log_filter').val());
+    delay(function() {
+        filter_log($('#log_filter').val(), $('#log_list li'));
+    }, 500);
+    
+    return true;
+}
+
+$(function() {
+    var opt = {
+        'onopen': function() {
+            append_internal_info("websocket connected!", LOG_ROTATE_NUM);
+            console.log("websocket connected!");
+        }, 
+        'onmessage': function(msg) {
+            var data = null;
+            try {
+                data = $.parseJSON(msg.data);
+            }
+            catch (e) {
+                show_common_alert("bad json data format: "+msg.data);
+                return;
+            }
+            
+            render_logs(data, LOG_ROTATE_NUM);
+        }, 
+        'onclose': function() {
+            show_common_alert("websocket closed!");
+        }, 
+        'onerror': function() {
+            show_common_alert("websocket error!");
+        }
+    };
+    
+    $('#log_filter').keyup(log_filter_keyup);
+    
+    var s = create_log_stream("ws://192.168.0.173:5000", opt);
+});
+</script>
+</html>

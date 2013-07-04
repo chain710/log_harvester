@@ -1,6 +1,6 @@
 log4cplus.appender.A1=log4cplus::ConsoleAppender
 log4cplus.appender.A1.layout=log4cplus::PatternLayout
-log4cplus.appender.A1.layout.ConversionPattern=[%d{%Y-%m-%d %H:%M:%S}][%-5p][%x][%l] %m%n
+log4cplus.appender.A1.layout.ConversionPattern=[%D{%Y-%m-%d %H:%M:%S}][%-5p][%x][%l] %m%n
 
 log4cplus.rootLogger=TRACE, A1
 

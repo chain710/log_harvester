@@ -389,15 +389,21 @@ void log_agent_t::broadcast_newlog( const std::string& fn, const std::string& lo
 {
     L_DEBUG("file %s has new log %s", fn.c_str(), logline.c_str());
 
+    Json::Value rsp_json;
+    rsp_json["file"] = fn;
+    rsp_json["log"].append(logline);
+    Json::FastWriter writer;
+    string json_str = writer.write(rsp_json);
+    L_TRACE("json content: %s", json_str.c_str());
     char msgbuf[2048];
-    int packlen = pack_ws_frame(msgbuf, sizeof(msgbuf), WFOP_TEXT, logline.length());
+    int packlen = pack_ws_frame(msgbuf, sizeof(msgbuf), WFOP_TEXT, json_str.length());
     if (packlen < 0)
     {
         L_ERROR("pack_ws_frame failed %d", packlen);
         return;
     }
 
-    packlen += snprintf(&msgbuf[packlen], sizeof(msgbuf)-packlen, "%s", logline.c_str());
+    packlen += snprintf(&msgbuf[packlen], sizeof(msgbuf)-packlen, "%s", json_str.c_str());
 
     client_map_t::iterator it;
     for (it = clients_.begin(); it != clients_.end(); ++it)
@@ -421,14 +427,19 @@ void log_agent_t::broadcast_newlog( const std::string& fn, const std::string& lo
         return;
     }
 
-    calypso_send_msgpack_by_group(opt_.msg_queue_, egt_log_master, msgbuf, packlen);
+    calypso_broadcast_msgpack_by_group(opt_.msg_queue_, egt_log_master, msgbuf, packlen);
 }
 
 log_agent_t::log_agent_t(app_init_option opt)
 {
     last_handle_reload_ = 0;
     harvester_.reg_newlog_callback(bind(&log_agent_t::broadcast_newlog, this, placeholders::_1, placeholders::_2));
-    harvester_.create();
+    int ret = harvester_.create();
+    if (ret < 0)
+    {
+        exit(-1);
+    }
+
     last_watch_log_check_time_ = 0;
     opt_ = opt;
 }
